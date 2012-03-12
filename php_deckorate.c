@@ -14,13 +14,16 @@
 
 #include "php_deckorate.h"
 
+/* {{{ ZEND_DECLARE_MODULE_GLOBALS(deckorate) */
+ZEND_DECLARE_MODULE_GLOBALS(deckorate)
+/* }}} */
+
 /* {{{ php_deckorate_init_globals */
 static void php_deckorate_init_globals(zend_deckorate_globals* deckorate_globals TSRMLS_DC)
 {
+    memset(&deckorate_globals->originals, 0, sizeof(HashTable));
 }
 /* }}} */
-
-
 
 /* {{{ php_deckorate_shutdown_globals */
 static void php_deckorate_shutdown_globals(zend_deckorate_globals* deckorate_globals TSRMLS_DC)
@@ -73,8 +76,8 @@ zend_module_entry deckorate_module_entry = {
 	deckorate_functions,
 	PHP_MINIT(deckorate),
 	PHP_MSHUTDOWN(deckorate),
-	NULL, /* RINIT */
-	NULL, /* RSHUTDOWN */
+	PHP_RINIT(deckorate), 
+	PHP_RSHUTDOWN(deckorate), 
 	PHP_MINFO(deckorate),
 #if ZEND_MODULE_API_NO >= 20010901
 	PHP_DECKORATE_VERSION,
@@ -113,9 +116,27 @@ PHP_MSHUTDOWN_FUNCTION(deckorate)
 }
 /* }}} */
 
+/* {{{ PHP_RINIT_FUNCTION(deckorate) */
+PHP_RINIT_FUNCTION(deckorate)
+{
+	zend_hash_init(&DECKORATE_G(originals), 32, NULL, NULL, 0);
+	return SUCCESS;
+}
+/* }}} */
+
+
+static int restore_function(char *fname, int fname_len TSRMLS_DC);
+
+int reverse_decorators(zend_function *fe TSRMLS_DC, int num_args, va_list args, zend_hash_key *hash_key)
+{
+	restore_function(hash_key->arKey, hash_key->nKeyLength-1 TSRMLS_CC);
+}
+
 /* {{{ PHP_RSHUTDOWN_FUNCTION(deckorate) */
 PHP_RSHUTDOWN_FUNCTION(deckorate)
 {
+	zend_hash_apply_with_arguments(&DECKORATE_G(originals) TSRMLS_CC, (apply_func_args_t)reverse_decorators, 0);
+	zend_hash_clean(&DECKORATE_G(originals));
 	return SUCCESS;
 }
 /* }}} */
@@ -137,22 +158,52 @@ PHP_MINFO_FUNCTION(deckorate)
 
 static int replace_function(char *fname, int fname_len, char *newname, int newname_len TSRMLS_DC) /* {{{ */
 {
-	zend_function *fe;
-	if (zend_hash_find(EG(function_table), fname, fname_len + 1, (void**)&fe) == FAILURE) {
-		php_error_docref(NULL TSRMLS_CC, E_WARNING, "%s() not found", fname);
+	zend_function fe, *pfe;
+	if (zend_hash_find(EG(function_table), fname, fname_len + 1, (void**)&pfe) == FAILURE) {
+		php_error_docref(NULL TSRMLS_CC, E_ERROR, "%s() not found", fname);
 		return FAILURE;
 	}
 
-	if (zend_hash_add(EG(function_table), newname, newname_len+1, fe, sizeof(zend_function), NULL) == FAILURE) {
-		php_error_docref(NULL TSRMLS_CC, E_WARNING, "%s() could not be added", newname);
+	fe = pfe[0];
+
+	if (zend_hash_add(EG(function_table), newname, newname_len + 1, &fe, sizeof(zend_function), NULL) == FAILURE) {
+		php_error_docref(NULL TSRMLS_CC, E_ERROR, "%s() could not be added", newname);
 		return FAILURE;
 	}
 
 	if (zend_hash_del(EG(function_table), fname, fname_len + 1) == FAILURE) {
-		php_error_docref(NULL TSRMLS_CC, E_WARNING, "%s() could not be replaced", fname);
+		php_error_docref(NULL TSRMLS_CC, E_ERROR, "%s() could not be replaced", fname);
 		return FAILURE;
 	}
 
+	zend_hash_add(&DECKORATE_G(originals), newname, newname_len + 1, &fe, sizeof(zend_function), NULL);
+
+	return SUCCESS;
+} /* }}} */
+
+static int restore_function(char *newname, int newname_len TSRMLS_DC) /* {{{ */
+{
+	zend_function *fe;
+	char *fname;
+	int fname_len;
+	if (zend_hash_find(&DECKORATE_G(originals), newname, newname_len + 1, (void**)&fe) == FAILURE) {
+		php_error_docref(NULL TSRMLS_CC, E_ERROR, "%s() could not be found", newname);
+		return FAILURE;
+	}
+
+	fname = fe->common.function_name;
+	fname_len = strlen(fname);
+
+	if (zend_hash_del(EG(function_table), fname, fname_len + 1) == FAILURE) {
+		/* go ahead anyway */
+	}
+	if (zend_hash_add(EG(function_table), fname, fname_len + 1, fe, sizeof(zend_function), NULL) == FAILURE) {
+		php_error_docref(NULL TSRMLS_CC, E_ERROR, "%s() could not be added", fname);
+		return FAILURE;
+	}
+	if (zend_hash_del(EG(function_table), newname, newname_len + 1) == FAILURE) {
+		/* go ahead anyway */
+	}
 	return SUCCESS;
 } /* }}} */
 
@@ -166,6 +217,11 @@ PHP_FUNCTION(deckorate)
 	if(zend_parse_parameters(ZEND_NUM_ARGS() TSRMLS_CC, "ss", &_old, &old_len, &_new, &new_len) == FAILURE)
 	{
 		return;
+	}
+
+	if(zend_hash_exists(&DECKORATE_G(originals), _old, old_len+1)) 
+	{
+		RETURN_FALSE;
 	}
 
 	if(replace_function(_old, old_len, _new, new_len TSRMLS_CC) == SUCCESS)

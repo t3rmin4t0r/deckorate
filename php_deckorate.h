@@ -59,12 +59,14 @@ extern zend_module_entry deckorate_module_entry;
 
 PHP_MINIT_FUNCTION(deckorate);
 PHP_MSHUTDOWN_FUNCTION(deckorate);
+PHP_RINIT_FUNCTION(deckorate);
 PHP_RSHUTDOWN_FUNCTION(deckorate);
 PHP_MINFO_FUNCTION(deckorate);
 
 
 /* {{{ zend_deckorate_globals */
 ZEND_BEGIN_MODULE_GLOBALS(deckorate)
+    HashTable originals;     /* these functions need to be replaced back */
 ZEND_END_MODULE_GLOBALS(deckorate)
 /* }}} */
 
